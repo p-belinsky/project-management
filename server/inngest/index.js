@@ -1,5 +1,6 @@
 import { Inngest } from "inngest";
 import prisma from "../configs/prisma.js";
+import sendEmail from "../configs/nodemailer.js";
 
 export const inngest = new Inngest({ id: "project-management" });
 
@@ -129,6 +130,64 @@ const syncWorkspaceMemberCreation = inngest.createFunction(
   }
 );
 
+
+//Inngest function to send email on task creation
+const sendTaskAssignmentEmail = inngest.createFunction(
+  { id: "send-task-assignment-email" },
+  { event: "app/task.assigned" },
+  async ({ event, step }) => {
+    const { taskId, origin } = event.data;
+    
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      include: {
+        assignee: true,
+        project: true,
+      }
+    });
+
+    await sendEmail({
+      to: task.assignee.email,
+      subject: `New Task Assignment in ${task.project.name}`,
+      body: `Hi ${task.assignee.name}` `${task.title}` `${new Date(task.due_date).toLocaleDateString()}
+          <a href=${origin}> View Task</a>`,
+  })
+
+    if(new Date(task.due_date).toLocaleDateString() !== new Date().toLocaleDateString()) {
+      await step.sleepUntil('wait-for-the-due-date', new Date(task.due_date));
+
+      await step.run('check-if-task-is-completed', async () => {
+        const task = await prisma.task.findUnique({
+          where: { id: taskId },
+          include: {
+            assignee: true,
+            project: true,
+          }
+        });
+
+        if(!task) return;
+
+        if(task.status !== 'DONE') {
+          await step.run('send-task-reminder-email', async () => {
+            await sendEmail({
+              to: task.assignee.email,
+              subject: `Reminder for ${task.project.name}`,
+              body: `Hi ${task.assignee.name},<br/><br/>
+                     This is a friendly reminder that the task "<strong>${task.title}</strong>" in the project "<strong>${task.project.name}</strong>" is due today (${new Date(task.due_date).toLocaleDateString()}).<br/><br/>
+                     Please make sure to complete it on time.<br/><br/>
+                     <a href=${origin}>View Task</a><br/><br/>
+                     Best regards,<br/>
+                     Project Management Team`,
+            })
+
+          });
+        }
+      });
+        
+        }
+      }
+);  
+
 export const functions = [
   syncUserCreation,
   syncUserDeletion,
@@ -137,4 +196,5 @@ export const functions = [
   syncWorkspaceUpdation,
   syncWorkspaceDeletion,
   syncWorkspaceMemberCreation,
+  sendTaskAssignmentEmail,
 ];
